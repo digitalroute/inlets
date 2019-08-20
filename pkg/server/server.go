@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/alexellis/inlets/pkg/router"
-	"github.com/alexellis/inlets/pkg/transport"
+	"github.com/digitalroute/inlets/pkg/router"
+	"github.com/digitalroute/inlets/pkg/transport"
 	"github.com/rancher/remotedialer"
 	"github.com/twinj/uuid"
 	"k8s.io/apimachinery/pkg/util/proxy"
@@ -16,12 +16,16 @@ import (
 
 // Server for the exit-node of inlets
 type Server struct {
-	Port   int
-	Token  string
-	router router.Router
-	server *remotedialer.Server
+	Port       int
+	router     router.Router
+	server     *remotedialer.Server
+	Authorizer Authorizer
 
 	DisableWrapTransport bool
+}
+
+type Authorizer interface {
+	authorize(req *http.Request) bool
 }
 
 // Serve traffic
@@ -72,10 +76,12 @@ func (s *Server) dialerFor(id, host string) remotedialer.Dialer {
 	}
 }
 
+/*
 func (s *Server) tokenValid(req *http.Request) bool {
 	auth := req.Header.Get("Authorization")
 	return len(s.Token) == 0 || auth == "Bearer "+s.Token
 }
+*/
 
 func (s *Server) authorized(req *http.Request) (id string, ok bool, err error) {
 	defer func() {
@@ -85,11 +91,13 @@ func (s *Server) authorized(req *http.Request) (id string, ok bool, err error) {
 		}
 		if !ok || err != nil {
 			// don't let non-authed request clear routes
+			fmt.Println("Doing del stuff")
 			req.Header.Del(transport.InletsHeader)
 		}
 	}()
 
-	if !s.tokenValid(req) {
+	if !s.Authorizer.authorize(req) {
+		fmt.Println("Not authorized, ok is false")
 		return "", false, nil
 	}
 

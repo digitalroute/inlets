@@ -4,9 +4,13 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"os"
 	"strings"
 
-	"github.com/alexellis/inlets/pkg/client"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/cognitoidentityprovider"
+	"github.com/digitalroute/inlets/pkg/client"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -17,6 +21,7 @@ func init() {
 	clientCmd.Flags().StringP("upstream", "u", "", "upstream server i.e. http://127.0.0.1:3000")
 	clientCmd.Flags().StringP("token", "t", "", "authentication token")
 	clientCmd.Flags().StringP("token-from", "f", "", "read the authentication token from a file")
+	clientCmd.Flags().StringP("token-source", "s", "", "input | file | cognito")
 	clientCmd.Flags().Bool("print-token", true, "prints the token in server mode")
 }
 
@@ -81,23 +86,9 @@ func runClient(cmd *cobra.Command, _ []string) error {
 		return errors.Wrap(err, "failed to get 'remote' value.")
 	}
 
-	tokenFile, err := cmd.Flags().GetString("token-from")
+	token, err := handleAuthConf(cmd)
 	if err != nil {
-		return errors.Wrap(err, "failed to get 'token-from' value.")
-	}
-	var token string
-	if len(tokenFile) > 0 {
-		fileData, err := ioutil.ReadFile(tokenFile)
-		if err != nil {
-			return errors.Wrap(err, fmt.Sprintf("unable to load file: %s", tokenFile))
-		}
-		token = string(fileData)
-	} else {
-		tokenVal, err := cmd.Flags().GetString("token")
-		if err != nil {
-			return errors.Wrap(err, "failed to get 'token' value.")
-		}
-		token = tokenVal
+		return errors.Wrap(err, "failed to get token.")
 	}
 
 	printToken, err := cmd.Flags().GetBool("print-token")
@@ -120,4 +111,51 @@ func runClient(cmd *cobra.Command, _ []string) error {
 	}
 
 	return nil
+}
+
+func handleAuthConf(cmd *cobra.Command) (string, error) {
+	var token string
+	auth, err := cmd.Flags().GetString("token-source")
+
+	if err != nil {
+		//use local stored token...
+		tokenFile, _ := cmd.Flags().GetString("token-from")
+		tokenVal, _ := cmd.Flags().GetString("token")
+		if len(tokenFile) > 0 {
+			fileData, errReadFile := ioutil.ReadFile(tokenFile)
+			if errReadFile != nil {
+				return "", errors.Wrap(err, fmt.Sprintf("unable to load file: %s", tokenFile))
+			}
+			token = string(fileData)
+		} else if len(tokenVal) > 0 {
+			token = tokenVal
+		}
+	}
+
+	if strings.EqualFold("cognito", auth) {
+		cognitoUser := os.Getenv("COGNITO_USER")
+		cognitoPass := os.Getenv("COGNITO_PASS")
+		cognitoClientId := os.Getenv("COGNITO_CLIENTID")
+		awsRegion := os.Getenv("AWS_DEFAULT_REGION")
+
+		//cognitoClientId := os.Getenv("COGNITO_CLIENTID")
+		//fmt.Println("Using Token: '" + cognitoUser + "' : '" + cognitoPass + "' : '" + cognitoClientId + "'")
+		client := cognitoidentityprovider.New(session.New(), &aws.Config{Region: aws.String(awsRegion)})
+
+		params := &cognitoidentityprovider.InitiateAuthInput{
+			AuthFlow: aws.String("USER_PASSWORD_AUTH"),
+			AuthParameters: map[string]*string{
+				"USERNAME": aws.String(cognitoUser),
+				"PASSWORD": aws.String(cognitoPass),
+			},
+			ClientId: aws.String(cognitoClientId),
+		}
+
+		authResp, err := client.InitiateAuth(params)
+		if err != nil {
+			return "", err
+		}
+		token = *authResp.AuthenticationResult.AccessToken
+	}
+	return token, nil
 }
